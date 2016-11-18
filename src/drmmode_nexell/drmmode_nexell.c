@@ -1,0 +1,134 @@
+/*
+ * Copyright © 2016 NEXELL Limited.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ */
+
+#include "../drmmode_driver.h"
+#include <stddef.h>
+#include <error.h>
+#include <xf86drmMode.h>
+#include <xf86drm.h>
+#include <sys/ioctl.h>
+
+/* Following ioctls should be included from libdrm exynos_drm.h but
+ * libdrm doesn't install this correctly so for now they are here.
+ */
+struct drm_nexell_plane_set_zpos {
+	__u32 plane_id;
+	__s32 zpos;
+};
+#define DRM_EXYNOS_PLANE_SET_ZPOS 0x06
+#define DRM_IOCTL_EXYNOS_PLANE_SET_ZPOS DRM_IOWR(DRM_COMMAND_BASE + \
+		DRM_EXYNOS_PLANE_SET_ZPOS, struct drm_nexell_plane_set_zpos)
+
+enum nx_gem_type {
+    NEXELL_BO_DMA,
+    NEXELL_BO_DMA_CACHEABLE,
+    NEXELL_BO_SYSTEM,
+    NEXELL_BO_SYSTEM_CACHEABLE,
+    NEXELL_BO_SYSTEM_NONCONTIG,
+    NEXELL_BO_SYSTEM_NONCONTIG_CACHEABLE,
+    NEXELL_BO_MAX,
+};
+
+struct drm_nexell_gem_create {
+	uint64_t size;
+	unsigned int flags;
+	unsigned int handle;
+	void *priv_data;
+};
+
+#define DRM_NX_GEM_CREATE 0x00
+/* Reserved 0x03 ~ 0x05 for nx specific gem ioctl */
+#define DRM_NX_GEM_GET 0x04
+#define DRM_NX_GEM_SYNC 0x05
+
+#define DRM_IOCTL_NX_GEM_CREATE DRM_IOWR(DRM_COMMAND_BASE + \
+				   DRM_NX_GEM_CREATE, struct drm_nexell_gem_create)
+#define DRM_IOCTL_NX_GEM_SYNC DRM_IOWR(DRM_COMMAND_BASE + \
+					 DRM_NX_GEM_SYNC, struct drm_nexell_gem_create)
+#define DRM_IOCTL_NX_GEM_GET DRM_IOWR(DRM_COMMAND_BASE + \
+					DRM_NX_GEM_GET,struct drm_nexell_gem_info)
+
+/* Cursor dimensions
+ * Technically we probably don't have any size limit.. since we
+ * are just using an overlay... but xserver will always create
+ * cursor images in the max size, so don't use width/height values
+ * that are too big
+ */
+#define CURSORW  (64)
+#define CURSORH  (64)
+
+/*
+ * Padding added down each side of cursor image. This is a workaround for a bug
+ * causing corruption when the cursor reaches the screen edges.
+ */
+#define CURSORPAD (0)
+
+#define ALIGN(val, align)	(((val) + (align) - 1) & ~((align) - 1))
+
+static int init_plane_for_cursor(int drm_fd, uint32_t plane_id)
+{
+    return 0;
+}
+
+static int create_custom_gem(int fd, struct armsoc_create_gem *create_gem)
+{
+	struct drm_nexell_gem_create create_nexell;
+	int ret;
+	unsigned int pitch;
+
+	/* make pitch a multiple of 64 bytes for best performance */
+	pitch = ALIGN(create_gem->width * ((create_gem->bpp + 7) / 8), 64);
+	memset(&create_nexell, 0, sizeof(create_nexell));
+	create_nexell.size = create_gem->height * pitch;
+
+	assert((create_gem->buf_type == ARMSOC_BO_SCANOUT) ||
+			(create_gem->buf_type == ARMSOC_BO_NON_SCANOUT));
+
+	create_nexell.flags = NEXELL_BO_SYSTEM;
+
+	ret = drmIoctl(fd, DRM_IOCTL_NX_GEM_CREATE, &create_nexell);
+
+	if (ret)
+	  return ret;
+
+	/* Convert custom create_exynos to generic create_gem */
+	create_gem->handle = create_nexell.handle;
+	create_gem->pitch = pitch;
+	create_gem->size = create_nexell.size;
+
+	return 0;
+}
+
+struct drmmode_interface nexell_interface = {
+	"nexell"	      /* name of drm driver */,
+	1                     /* use_page_flip_events */,
+	1                     /* use_early_display */,
+	CURSORW               /* cursor width */,
+	CURSORH               /* cursor_height */,
+	CURSORPAD             /* cursor padding */,
+	HWCURSOR_API_PLANE    /* cursor_api */,
+	init_plane_for_cursor /* init_plane_for_cursor */,
+	0                     /* vblank_query_supported */,
+	create_custom_gem     /* create_custom_gem */,
+};
